@@ -9,11 +9,12 @@
 *
 */
 
-//--top module, represents one core--
+//--top module, represents one core of an LC-3 processor--
 module lc3_processor (
     input logic clk,
     input logic reset
 );
+
     //--memory registers--
     logic [15:0] mar, mdr;
 
@@ -26,7 +27,7 @@ module lc3_processor (
     logic mio_en, r_w;
 
     //--status signals--
-    logic [15:0] ir;
+    logic [15:0] ir;                //MOVE TO DATAPATH
     logic ird, ben, mem_r, irpt;
 
     //--instantiate control unit--
@@ -55,7 +56,56 @@ module lc3_processor (
 
 endmodule
 
-//--control unit--
+
+//--main data path--
+module data_path (
+    input logic clk, reset,
+    input logic ld_ben, ld_mar, ld_mdr, ld_ir, ld_pc, ld_reg, ld_cc,
+    input logic gate_marmux, gate_mdr, gate_alu, gate_pc,
+    input logic marmux, addr1mux,
+    input logic [1:0] pcmux, addr2mux, drmux, sr1mux,
+    input logic [1:0] aluk,
+    input logic mio_en, r_w
+);
+    //--bus--
+    logic [15:0] main_bus;
+
+    //--register immediate outputs--
+    logic [15:0] ir_out, pc_out, mdr_out, mar_out, sr1out, sr2out;
+
+    //--instantiating the IR--
+    ir lc3_ir (
+        .clk(clk), .reset(reset), .bus(main_bus), .ld(ld_ir),
+        .ir_out(ir_out)
+    );
+
+    //--instantiating the PC--
+    pc lc3_pc (
+        .clk(clk), .reset(reset), .pc_in(pcmux_o), .ld(ld_pc),
+        .pc_out(pc_out)
+    );
+
+    //--instantiating the MAR--
+    mar lc3_mar (
+        .clk(clk), .reset(reset), .bus(main_bus), .ld(ld_mar),
+        .mar_out(mar_out)
+    );
+
+    //--instantiating the MDR--
+    mdr lc3_mdr (
+        .clk(clk), .reset(reset), .mdr_in(mioen_o), .ld(ld_mdr), 
+        .mdr_out(mdr_out)
+    )
+
+    //--instantiating the reg file--
+    reg_file lc3_regfile (
+        .clk(clk), .reset(reset), .bus(main_bus), .dr(drmux_o), .sr1(sr1mux_o), .sr2(ir_out[2:0]), .ld(ld_reg),
+        .sr1out(sr1out), .sr2out(sr2out)
+    ); 
+endmodule
+
+
+//--control unit fsm--
 module ctrl_unit (
     input logic clk, reset,
     input logic [15:0] ir,
@@ -80,7 +130,7 @@ module ctrl_unit (
             curr_state <= next_state;
     end
 
-    //--logic for rom_cond--
+    //--generate set of conditions for microsequencer--
     always_comb begin
         if(mem_r & next_state_imm[1])
             rom_cond = 3'b001;
@@ -92,7 +142,7 @@ module ctrl_unit (
             rom_cond = 3'b000;
     end
 
-    //--logic for rom_ctrl_signals--
+    //--rom_ctrl_signals for each state--
     always_comb begin
         case(curr_state)
             6'd 18: begin        //fetch 1 MAR <- PC, PC <- PC + 1
@@ -256,9 +306,8 @@ module ctrl_unit (
     assign mio_en = rom_ctrl_signals[1];          //memory signals
     assign r_w = rom_ctrl_signals[0];
 
-
-
 endmodule
+
 
 //--microsequencer (next state logic)--
 module microsequencer (
@@ -269,7 +318,8 @@ module microsequencer (
 
     output logic [5:0] j
 );
-    logic [7:0] y; 
+    logic [7:0] y;
+    //--handling combinational logic for next state based on conditions (j)-- 
     always_comb begin
         case(cond)
             3'b011 : y = 8'b00001000;
@@ -287,18 +337,163 @@ module microsequencer (
     end
 endmodule
 
-module data_path (
 
+//--instruction register--
+module ir (
+    input clk, reset,
+    input logic [15:0] bus,
+    input logic ld,
+    
+    output logic [15:0] ir_out
 );
+    logic [15:0] instruction_register;
+    //--synchronous load--
+    always_ff @(posedge clk) begin
+        if(reset) begin
+            instruction_register <= 16'h0000;       //defaults to branching 0 from x3000 (nothing changes)
+        end
+        else if(ld) begin
+            instruction_register <= bus;
+        end
+    end
+    //--asynchronous ir_out--
+    always_comb begin
+        ir_out = instruction_register;
+    end
 endmodule
 
+
+//--program counter--
+module pc (
+    input logic clk, reset,
+    input logic [15:0] pc_in,
+    input logic ld,
+
+    output logic [15:0] pc_out
+);
+    logic [15:0] program_counter;
+    //--synchronous load--
+    always_ff @(posedge clk) begin
+        if(reset) begin
+            program_counter <= 16'h3000;                    //default reset to x3000
+        end
+        else if(ld) begin
+            program_counter <= pc_in;
+        end
+    end
+    //--asynchronous pc_out--
+    always_comb begin
+        pc_out = program_counter;
+    end
+endmodule
+
+
+//--memory address register--
+module mar (
+    input logic clk, reset,
+    input logic [15:0] bus,
+    input logic ld,
+
+    output logic [15:0] mar_out
+);
+    logic [15:0] memory_address_register;
+    //--synchronous load--
+    always_ff @(posedge clk) begin
+        if(reset) begin
+            memory_address_register <= 0;                    
+        end
+        else if(ld) begin
+            memory_address_register <=  bus;
+        end
+    end
+    //--asynchronous mar_out--
+    always_comb begin
+        mar_out = memory_address_register;
+    end
+endmodule
+
+
+//--memory data register--
+module mdr (
+    input logic clk, reset,
+    input logic [15:0] mdr_in,
+    input logic ld,
+
+    output logic [15:0] mdr_out
+);
+    logic [15:0] memory_data_register;
+    //--synchronous load--
+    always_ff @(posedge clk) begin
+        if(reset) begin
+            memory_data_register <= 0;                    
+        end
+        else if(ld) begin
+            memory_data_register <=  mdr_in;
+        end
+    end
+    //--asynchronous mdr_out--
+    always_comb begin
+        mdr_out = memory_data_register;
+    end
+endmodule
+
+
+//--register file with registers R0 through R7 used in LC-3--
+module reg_file (
+    input logic clk, reset,
+    input logic [15:0] bus,
+    input logic [2:0] dr, sr1, sr2,
+    input logic ld,
+
+    output logic [15:0] sr1out, sr2out
+);
+    logic [15:0] regs [0:7];                    // these are R0 through R7
+    //--synchronous load--
+    always_ff @(posedge clk) begin
+        if(reset) begin
+            for(int i = 0; i < 8; i++) begin
+                regs[i] <= 0;
+            end
+        end
+        else begin
+            if(ld) begin
+                regs[dr] <= bus;
+            end
+        end
+    end
+    //--asynchronous sr1 and sr2 outputs--
+    always_comb begin
+        sr1out = regs[sr1];
+        sr2out = regs[sr2];
+    end
+endmodule
+
+
+//--arithmetic and logic unit (supports add, and, not, and pass)--
+module alu (
+    input logic [15:0] a, b, 
+    input logic [1:0] aluk,
+
+    output logic [15:0] alu_out
+);
+    always_comb begin
+        case(aluk)
+            2'b00: alu_out = a + b;
+            2'b01: alu_out = a & b;
+            2'b10: alu_out = ~a;
+            2'b11: alu_out = a;
+        endcase
+    end
+endmodule
+
+
+//--memory module for the LC-3, featuring 16-bit addressibility and 2^16 address space [0:xFFFF]--
 module memory (
     input logic clk, reset, mio_en, r_w,
     input logic [15:0] addr, data_in,
     output logic [15:0] read_data,
     output logic mem_r
 );
-
     logic [15:0] main_memory [0:65535];
 
     always_ff @(posedge clk) begin
